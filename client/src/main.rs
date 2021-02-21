@@ -194,4 +194,12 @@ fn transfer_file(mut stream: TcpStream, ip: IpAddr, port: u32, file_contents: Ve
             );
         }
     }
+
+    let mut buffer = [0; 1024];
+    let bytes_read = stream.read(&mut buffer).unwrap();
+    let message = Message::new(&buffer, bytes_read);
+
+    if let Ok(Message::End) = message {
+        println!("Got fin message from server, quitting.");
+    }
 }

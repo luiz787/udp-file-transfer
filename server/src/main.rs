@@ -51,6 +51,8 @@ fn main() {
         if let Err(msg) = handle_connection(stream) {
             eprintln!("{}", msg);
         }
+
+        println!("Finishing connection");
     }
 }
 
@@ -154,4 +156,10 @@ fn receive_file(stream: &mut TcpStream, udp_socket: UdpSocket, file_data: FileDa
 
     file.write_all(&file_contents)
         .expect("Failed to write to file.");
+
+    let fin: Vec<u8> = vec![0, 5];
+    let res = stream.write(&fin);
+    if let Err(_e) = res {
+        panic!("Falha ao enviar mensagem de fim de conexão.");
+    }
 }
