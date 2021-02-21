@@ -1,39 +1,20 @@
 use core::panic;
+use std::env;
 use std::net::TcpListener;
 use std::process;
 use std::{collections::BTreeMap, fs::File, str};
 use std::{
-    convert::TryInto,
     io::Write,
     net::{TcpStream, UdpSocket},
 };
-use std::{env, io::Read};
 
 use common::{ChunkData, FileData, Message};
 
-struct Config {
-    port: u16,
-}
-
-impl Config {
-    pub fn new(mut args: env::Args) -> Result<Config, &'static str> {
-        args.next();
-
-        let port = match args.next() {
-            Some(port) => port,
-            None => return Err("No port specified"),
-        };
-
-        let port = port
-            .parse()
-            .expect("Port should be a 16 bit unsigned integer");
-
-        Ok(Config { port })
-    }
-}
+mod config;
+use config::ServerConfig;
 
 fn main() {
-    let config = Config::new(env::args()).unwrap_or_else(|err| {
+    let config = ServerConfig::new(env::args()).unwrap_or_else(|err| {
         eprintln!("Problem parsing arguments: {}", err);
         process::exit(1);
     });
@@ -57,34 +38,24 @@ fn main() {
 }
 
 fn handle_connection(mut stream: TcpStream) -> Result<(), &'static str> {
-    let mut buffer = [0; 1024];
-    let bytes_read = stream.read(&mut buffer).unwrap();
-    let message = Message::new(&buffer, bytes_read);
+    let message = common::receive_message(&mut stream);
     if let Err(msg) = message {
         return Err(msg);
     }
 
     // TODO: this variable will be mutable
     let udp_port: u32 = 30000;
-    let _udp_socket =
+    let udp_socket =
         UdpSocket::bind(("127.0.0.1", udp_port as u16)).expect("Não foi possível fazer bind UDP");
 
-    let mut connection: Vec<u8> = vec![0, 2];
-    for byte in udp_port.to_be_bytes().iter() {
-        connection.push(*byte);
-    }
-
-    let buffer: [u8; 6] = connection.try_into().unwrap();
-
-    let bytes_written = stream.write(&buffer);
+    let connection = build_connection_message(udp_port);
+    let bytes_written = stream.write(&connection);
 
     if let Err(_e) = bytes_written {
         return Err("Failed to send bytes");
     }
 
-    let mut buffer = [0; 1024];
-    let bytes_read = stream.read(&mut buffer).unwrap();
-    let message = Message::new(&buffer, bytes_read);
+    let message = common::receive_message(&mut stream);
 
     // TODO: remove debug code
     let file_data = match message {
@@ -92,16 +63,27 @@ fn handle_connection(mut stream: TcpStream) -> Result<(), &'static str> {
         _ => panic!("Não foi possível obter dados do arquivo"),
     };
 
-    let ok = vec![0, 4];
+    let ok = build_ok_message();
     let bytes_written = stream.write(&ok);
 
     if let Err(_e) = bytes_written {
         return Err("Failed to send bytes");
     }
 
-    receive_file(&mut stream, _udp_socket, file_data);
+    receive_file(&mut stream, udp_socket, file_data);
 
     Ok(())
+}
+
+fn build_ok_message() -> Vec<u8> {
+    vec![0, 4]
+}
+
+fn build_connection_message(udp_port: u32) -> Vec<u8> {
+    let mut connection: Vec<u8> = vec![0, 2];
+    connection.extend(udp_port.to_be_bytes().iter());
+
+    connection
 }
 
 fn receive_file(stream: &mut TcpStream, udp_socket: UdpSocket, file_data: FileData) {

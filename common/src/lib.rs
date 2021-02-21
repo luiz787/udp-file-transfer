@@ -1,4 +1,4 @@
-use std::str;
+use std::{io::Read, net::TcpStream, str};
 pub struct FileData {
     pub filename: String,
     pub file_size: u64,
@@ -109,4 +109,15 @@ fn u64_from_u8_array(u8_array: &[u8]) -> u64 {
         + ((u8_array[5] as u64) << 16)
         + ((u8_array[6] as u64) << 8)
         + ((u8_array[7] as u64) << 0)
+}
+
+pub fn receive_message(stream: &mut TcpStream) -> Result<Message, &'static str> {
+    let mut buffer = [0; 1024];
+
+    let bytes_read = stream.read(&mut buffer);
+
+    match bytes_read {
+        Err(_e) => return Err("Falha ao receber da stream TCP"),
+        Ok(value) => Message::new(&buffer, value),
+    }
 }
