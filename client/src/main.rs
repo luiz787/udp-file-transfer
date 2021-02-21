@@ -8,11 +8,11 @@ use std::{env, io::Write};
 
 use common::Message;
 
-mod config;
-use config::Config;
+mod client_config;
+use client_config::ClientConfig;
 
 fn main() {
-    let config = Config::new(env::args()).unwrap_or_else(|err| {
+    let config = ClientConfig::new(env::args()).unwrap_or_else(|err| {
         eprintln!("Problem parsing arguments: {}", err);
         process::exit(1);
     });
@@ -50,7 +50,7 @@ fn main() {
     transfer_file(stream, config.ip, port, file_contents);
 }
 
-fn create_info_file_message(config: &Config, file_contents: &Vec<u8>) -> Vec<u8> {
+fn create_info_file_message(config: &ClientConfig, file_contents: &Vec<u8>) -> Vec<u8> {
     let mut info_file: Vec<u8> = vec![0, 3];
     let filename = config.filename.filename.as_bytes();
 

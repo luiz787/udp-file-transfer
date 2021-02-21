@@ -4,7 +4,7 @@ use std::net::IpAddr;
 use std::path::Path;
 use std::str;
 
-pub struct Config {
+pub struct ClientConfig {
     pub ip: IpAddr,
     pub port: u16,
     pub filename: Filename,
@@ -47,8 +47,8 @@ impl Filename {
     }
 }
 
-impl Config {
-    pub fn new(mut args: env::Args) -> Result<Config, &'static str> {
+impl ClientConfig {
+    pub fn new(mut args: env::Args) -> Result<ClientConfig, &'static str> {
         args.next();
 
         let ip = match args.next() {
@@ -79,6 +79,6 @@ impl Config {
             Err(msg) => return Err(msg),
         };
 
-        Ok(Config { ip, port, filename })
+        Ok(ClientConfig { ip, port, filename })
     }
 }

@@ -10,8 +10,8 @@ use std::{
 
 use common::{ChunkData, FileData, Message};
 
-mod config;
-use config::ServerConfig;
+mod server_config;
+use server_config::ServerConfig;
 
 fn main() {
     let config = ServerConfig::new(env::args()).unwrap_or_else(|err| {
