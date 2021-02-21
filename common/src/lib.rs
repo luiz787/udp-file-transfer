@@ -4,14 +4,20 @@ pub struct FileData {
     pub file_size: u64,
 }
 
+pub struct ChunkData {
+    pub sequence_number: u32,
+    pub payload_size: u16,
+    pub data: Vec<u8>,
+}
+
 pub enum Message {
     Hello,
     Connection(u32),
     InfoFile(FileData),
     Ok,
     End,
-    File,
-    Ack,
+    File(ChunkData),
+    Ack(u32),
 }
 
 impl Message {
@@ -52,11 +58,39 @@ impl Message {
             }
             4 => Ok(Self::Ok),
             5 => Ok(Self::End),
-            6 => Ok(Self::File),
-            7 => Ok(Self::Ack),
+            6 => {
+                if bytes_read < 8 {
+                    return Err(
+                        "Read fewer than 8 bytes for message that should contain at least 8 bytes",
+                    );
+                }
+
+                let sequence_number = u32_from_u8_array(&message_type[2..6]);
+                let payload_size = u16_from_u8_array(&message_type[6..8]);
+
+                // TODO: avoid clone
+                let file_content = (&message_type[8..bytes_read].to_vec()).clone();
+                Ok(Self::File(ChunkData {
+                    sequence_number,
+                    payload_size,
+                    data: file_content,
+                }))
+            }
+            7 => {
+                if bytes_read < 6 {
+                    return Err("Read fewer than 6 bytes for message that should contain 6 bytes");
+                }
+
+                let sequence_number = u32_from_u8_array(&message_type[2..6]);
+                Ok(Self::Ack(sequence_number))
+            }
             _ => Err("Unknown message type"),
         }
     }
+}
+
+fn u16_from_u8_array(u8_array: &[u8]) -> u16 {
+    ((u8_array[0] as u16) << 8) + ((u8_array[1] as u16) << 0)
 }
 
 fn u32_from_u8_array(u8_array: &[u8]) -> u32 {
