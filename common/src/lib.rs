@@ -5,4 +5,4 @@ mod message;
 pub use message::{ChunkData, FileData, Message};
 
 mod network_utils;
-pub use network_utils::receive_message;
+pub use network_utils::{receive_message, send_message};

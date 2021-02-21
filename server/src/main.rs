@@ -8,7 +8,7 @@ use std::{
     net::{TcpStream, UdpSocket},
 };
 
-use common::{ChunkData, FileData, Message};
+use common::{send_message, ChunkData, FileData, Message};
 
 mod server_config;
 use server_config::ServerConfig;
@@ -21,12 +21,12 @@ fn main() {
 
     let address = format!("0.0.0.0:{}", config.port);
 
-    println!("{}", address);
-
+    println!("Binding to {}", address);
     let listener = TcpListener::bind(address)
         .expect(format!("Failed to bind to port {}", config.port).as_str());
 
     for stream in listener.incoming() {
+        // TODO: spawn new thread to handle connection
         let stream = stream.unwrap();
 
         if let Err(msg) = handle_connection(stream) {
@@ -38,41 +38,42 @@ fn main() {
 }
 
 fn handle_connection(mut stream: TcpStream) -> Result<(), &'static str> {
-    let message = common::receive_message(&mut stream);
-    if let Err(msg) = message {
-        return Err(msg);
-    }
+    // Wait for hello
+    common::receive_message(&mut stream)?;
 
     // TODO: this variable will be mutable
     let udp_port: u32 = 30000;
     let udp_socket =
         UdpSocket::bind(("127.0.0.1", udp_port as u16)).expect("Não foi possível fazer bind UDP");
 
-    let connection = build_connection_message(udp_port);
-    let bytes_written = stream.write(&connection);
+    send_connection_message(udp_port, &mut stream)?;
 
-    if let Err(_e) = bytes_written {
-        return Err("Failed to send bytes");
-    }
-
+    // Wait for info file
     let message = common::receive_message(&mut stream);
 
-    // TODO: remove debug code
+    // TODO: remove panic
     let file_data = match message {
         Ok(Message::InfoFile(file_data)) => file_data,
         _ => panic!("Não foi possível obter dados do arquivo"),
     };
 
-    let ok = build_ok_message();
-    let bytes_written = stream.write(&ok);
-
-    if let Err(_e) = bytes_written {
-        return Err("Failed to send bytes");
-    }
+    send_ok_message(&mut stream)?;
 
     receive_file(&mut stream, udp_socket, file_data);
 
     Ok(())
+}
+
+fn send_connection_message(udp_port: u32, stream: &mut TcpStream) -> Result<usize, &'static str> {
+    let data = build_connection_message(udp_port);
+
+    send_message(stream, &data)
+}
+
+fn send_ok_message(stream: &mut TcpStream) -> Result<usize, &'static str> {
+    let data = build_ok_message();
+
+    send_message(stream, &data)
 }
 
 fn build_ok_message() -> Vec<u8> {
