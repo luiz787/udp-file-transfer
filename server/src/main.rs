@@ -1,14 +1,18 @@
 use core::panic;
-use std::env;
 use std::net::TcpListener;
 use std::process;
-use std::{collections::BTreeMap, fs::File, str};
+use std::thread;
+use std::{collections::BTreeMap, fs::File};
+use std::{env, io::ErrorKind};
 use std::{
     io::Write,
     net::{TcpStream, UdpSocket},
 };
 
-use common::{send_message, ChunkData, FileData, Message};
+use std::sync::atomic::AtomicU16;
+use std::sync::Arc;
+
+use common::{send_message, ChunkData, FileData, GenericError, Message, MessageCreationError};
 
 mod server_config;
 use server_config::ServerConfig;
@@ -20,6 +24,7 @@ fn main() {
     });
 
     let address = format!("0.0.0.0:{}", config.port);
+    let udp_port = Arc::new(AtomicU16::new(30000));
 
     println!("Binding to {}", address);
     let listener = TcpListener::bind(address)
@@ -29,48 +34,55 @@ fn main() {
         // TODO: spawn new thread to handle connection
         let stream = stream.unwrap();
 
-        if let Err(msg) = handle_connection(stream) {
-            eprintln!("{}", msg);
-        }
+        let udp_port_clone = Arc::clone(&udp_port);
+        thread::spawn(move || {
+            if let Err(msg) = handle_connection(stream, udp_port_clone) {
+                match msg {
+                    GenericError::IO(e) => {
+                        eprintln!("{}", e);
+                    }
+                    GenericError::Logic(e) => {
+                        eprintln!("{}", e);
+                    }
+                }
+            }
+            println!("Finishing connection");
+        });
 
-        println!("Finishing connection");
+        println!("Created a new thread to handle request, listening for other connections.");
     }
 }
 
-fn handle_connection(mut stream: TcpStream) -> Result<(), &'static str> {
+fn handle_connection(mut stream: TcpStream, udp_port: Arc<AtomicU16>) -> Result<(), GenericError> {
     // Wait for hello
     common::receive_message(&mut stream)?;
 
-    // TODO: this variable will be mutable
-    let udp_port: u32 = 30000;
-    let udp_socket =
-        UdpSocket::bind(("127.0.0.1", udp_port as u16)).expect("Não foi possível fazer bind UDP");
+    let port = udp_port.fetch_add(10, std::sync::atomic::Ordering::SeqCst);
+    println!("Will use udp in port {}", port);
+    let udp_socket = UdpSocket::bind(("127.0.0.1", port)).expect("Não foi possível fazer bind UDP");
 
-    send_connection_message(udp_port, &mut stream)?;
+    GenericError::transform_io(send_connection_message(port, &mut stream))?;
 
     // Wait for info file
-    let message = common::receive_message(&mut stream);
+    let message = common::receive_message(&mut stream)?;
 
     // TODO: remove panic
     let file_data = match message {
-        Ok(Message::InfoFile(file_data)) => file_data,
-        _ => panic!("Não foi possível obter dados do arquivo"),
+        Message::InfoFile(file_data) => file_data,
+        _ => panic!("Tipo de mensagem inesperado"),
     };
 
-    send_ok_message(&mut stream)?;
-
-    receive_file(&mut stream, udp_socket, file_data);
-
-    Ok(())
+    GenericError::transform_io(send_ok_message(&mut stream))?;
+    receive_file(&mut stream, udp_socket, file_data)
 }
 
-fn send_connection_message(udp_port: u32, stream: &mut TcpStream) -> Result<usize, &'static str> {
+fn send_connection_message(udp_port: u16, stream: &mut TcpStream) -> Result<usize, std::io::Error> {
     let data = build_connection_message(udp_port);
 
     send_message(stream, &data)
 }
 
-fn send_ok_message(stream: &mut TcpStream) -> Result<usize, &'static str> {
+fn send_ok_message(stream: &mut TcpStream) -> Result<usize, std::io::Error> {
     let data = build_ok_message();
 
     send_message(stream, &data)
@@ -80,14 +92,18 @@ fn build_ok_message() -> Vec<u8> {
     vec![0, 4]
 }
 
-fn build_connection_message(udp_port: u32) -> Vec<u8> {
+fn build_connection_message(udp_port: u16) -> Vec<u8> {
     let mut connection: Vec<u8> = vec![0, 2];
-    connection.extend(udp_port.to_be_bytes().iter());
+    connection.extend((udp_port as u32).to_be_bytes().iter());
 
     connection
 }
 
-fn receive_file(stream: &mut TcpStream, udp_socket: UdpSocket, file_data: FileData) {
+fn receive_file(
+    stream: &mut TcpStream,
+    udp_socket: UdpSocket,
+    file_data: FileData,
+) -> Result<(), GenericError> {
     let mut map: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
     let mut total_received: u64 = 0;
     while total_received < file_data.file_size {
@@ -98,27 +114,32 @@ fn receive_file(stream: &mut TcpStream, udp_socket: UdpSocket, file_data: FileDa
             _ => 0,
         };
         println!("Read {} from udp socket", bytes_read);
-        let message = Message::new(&buffer, bytes_read);
-        if let Ok(Message::File(ChunkData {
-            sequence_number,
-            data,
-            payload_size,
-        })) = message
-        {
-            if !map.contains_key(&sequence_number) {
-                map.insert(sequence_number, data);
-                total_received += payload_size as u64;
-            }
-            let mut ack: Vec<u8> = vec![0, 7];
-            for byte in sequence_number.to_be_bytes().iter() {
-                ack.push(*byte);
-            }
 
-            let bytes_written = stream.write(&ack);
+        // TODO: remove thread sleep
+        thread::sleep(std::time::Duration::from_secs(5));
+        let message = GenericError::transform_logic(Message::new(&buffer, bytes_read));
 
-            if let Err(_e) = bytes_written {
-                panic!("Failed to send bytes");
+        match message {
+            Ok(Message::File(ChunkData {
+                sequence_number,
+                data,
+                payload_size,
+            })) => {
+                if !map.contains_key(&sequence_number) {
+                    map.insert(sequence_number, data);
+                    total_received += payload_size as u64;
+                }
+                let mut ack: Vec<u8> = vec![0, 7];
+                ack.extend(sequence_number.to_be_bytes().iter());
+
+                GenericError::transform_io(send_message(stream, &ack))?;
             }
+            Ok(_val) => {
+                return Err(GenericError::Logic(MessageCreationError::new(
+                    "Invalid message type",
+                )))
+            }
+            Err(e) => return Err(e),
         }
     }
 
@@ -135,14 +156,21 @@ fn receive_file(stream: &mut TcpStream, udp_socket: UdpSocket, file_data: FileDa
         file_contents.len()
     );
 
-    let mut file = File::create("debug.txt").expect("Failed to create output file.");
+    if let Err(e) = std::fs::create_dir("output") {
+        if e.kind() == ErrorKind::AlreadyExists {
+            println!("Output folder already exists, continuing");
+        } else {
+            eprintln!("Output folder was not created: {}", e);
+            return Err(GenericError::IO(e));
+        }
+    }
+    let mut file =
+        GenericError::transform_io(File::create(format!("output/{}", file_data.filename)))?;
 
-    file.write_all(&file_contents)
-        .expect("Failed to write to file.");
+    GenericError::transform_io(file.write_all(&file_contents))?;
 
     let fin: Vec<u8> = vec![0, 5];
-    let res = stream.write(&fin);
-    if let Err(_e) = res {
-        panic!("Falha ao enviar mensagem de fim de conexão.");
-    }
+    let res = GenericError::transform_io(stream.write(&fin));
+
+    res.map(|_val| ())
 }

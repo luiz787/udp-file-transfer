@@ -25,7 +25,6 @@ fn main() {
     let bytes_sent = stream.write(&hello).expect("Failed to write buffer");
     println!("{} bytes sent", bytes_sent);
 
-    // TODO: handle error
     let message = common::receive_message(&mut stream);
 
     let port = match message {
@@ -68,27 +67,27 @@ fn create_hello_message() -> Vec<u8> {
 
 fn transfer_file(mut stream: TcpStream, ip: IpAddr, port: u32, file_contents: Vec<u8>) -> () {
     println!("Length of file: {}", file_contents.len());
-    let socket = UdpSocket::bind((ip, (port + 1) as u16)).expect("Failed to bind to UDP socket");
+    let socket = UdpSocket::bind((ip, 0)).expect("Failed to bind to UDP socket");
 
     for (index, chunk) in file_contents.chunks(1000).enumerate() {
         let mut data: Vec<u8> = vec![0, 6];
 
         let mut chunk = chunk.to_vec();
-        for byte in (index as u32).to_be_bytes().iter() {
-            data.push(*byte);
-        }
+
+        let index_bytes = (index as u32).to_be_bytes();
+        data.extend(index_bytes.iter());
 
         let payload_size: u16 = chunk.len() as u16;
         println!("Processing chunk {}, size: {}", index, payload_size);
-        for byte in payload_size.to_be_bytes().iter() {
-            data.push(*byte);
-        }
 
+        data.extend(payload_size.to_be_bytes().iter());
         data.append(&mut chunk);
+
         let bytes_sent = socket.send_to(&data, (ip, port as u16));
         let bytes_sent = match bytes_sent {
             Err(e) => {
                 eprintln!("{}", e);
+                // TODO: dont panic
                 panic!(e);
             }
             Ok(bytes) => bytes,

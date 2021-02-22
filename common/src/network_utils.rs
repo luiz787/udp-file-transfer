@@ -1,24 +1,38 @@
-use std::io::{Read, Write};
+use std::io::{Error, Read, Write};
 use std::net::TcpStream;
 
-use crate::Message;
+use crate::{Message, MessageCreationError};
 
-pub fn receive_message(stream: &mut TcpStream) -> Result<Message, &'static str> {
-    let mut buffer = [0; 1024];
+pub enum GenericError {
+    IO(std::io::Error),
+    Logic(MessageCreationError),
+}
 
-    let bytes_read = stream.read(&mut buffer);
+impl GenericError {
+    pub fn transform_io<T>(original_result: Result<T, std::io::Error>) -> Result<T, GenericError> {
+        original_result.map_err(|e| GenericError::IO(e))
+    }
 
-    match bytes_read {
-        Err(_e) => return Err("Falha ao receber da stream TCP"),
-        Ok(value) => Message::new(&buffer, value),
+    pub fn transform_logic<T>(
+        original_result: Result<T, MessageCreationError>,
+    ) -> Result<T, GenericError> {
+        original_result.map_err(|e| GenericError::Logic(e))
     }
 }
 
-pub fn send_message(stream: &mut TcpStream, data: &Vec<u8>) -> Result<usize, &'static str> {
+pub fn receive_message(stream: &mut TcpStream) -> Result<Message, GenericError> {
+    let mut buffer = [0; 1024];
+
+    let bytes_read = stream
+        .read(&mut buffer)
+        .map_err(|err| GenericError::IO(err));
+
+    bytes_read
+        .and_then(|value| Message::new(&buffer, value).map_err(|err| GenericError::Logic(err)))
+}
+
+pub fn send_message(stream: &mut TcpStream, data: &Vec<u8>) -> Result<usize, Error> {
     let bytes_written = stream.write(data);
 
-    match bytes_written {
-        Err(_e) => return Err("Failed to send bytes"),
-        Ok(amt) => Ok(amt),
-    }
+    bytes_written
 }
