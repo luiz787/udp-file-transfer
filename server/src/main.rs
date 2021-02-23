@@ -23,7 +23,7 @@ fn main() {
         process::exit(1);
     });
 
-    let address = format!("0.0.0.0:{}", config.port);
+    let address = format!("[::]:{}", config.port);
     let udp_port = Arc::new(AtomicU16::new(30000));
 
     println!("Binding to {}", address);
@@ -59,7 +59,7 @@ fn handle_connection(mut stream: TcpStream, udp_port: Arc<AtomicU16>) -> Result<
 
     let port = udp_port.fetch_add(10, std::sync::atomic::Ordering::SeqCst);
     println!("Will use udp in port {}", port);
-    let udp_socket = UdpSocket::bind(("127.0.0.1", port)).expect("Não foi possível fazer bind UDP");
+    let udp_socket = UdpSocket::bind(("::", port)).expect("Não foi possível fazer bind UDP");
 
     GenericError::transform_io(send_connection_message(port, &mut stream))?;
 
@@ -104,6 +104,7 @@ fn receive_file(
     udp_socket: UdpSocket,
     file_data: FileData,
 ) -> Result<(), GenericError> {
+    println!("Starting to receive file");
     let mut expected_sequence_number = 0;
     let mut contents: Vec<u8> = Vec::new();
     let expected_chunks = (file_data.file_size / 1000) + 1;
