@@ -1,12 +1,13 @@
-use std::io::prelude::*;
+use std::cmp::min;
 use std::iter::repeat;
 use std::net::IpAddr;
 use std::net::TcpStream;
 use std::net::UdpSocket;
 use std::process;
+use std::time::{Duration, Instant};
 use std::{env, io::Write};
 
-use common::Message;
+use common::{receive_message, Message};
 
 mod client_config;
 use client_config::ClientConfig;
@@ -69,50 +70,90 @@ fn transfer_file(mut stream: TcpStream, ip: IpAddr, port: u32, file_contents: Ve
     println!("Length of file: {}", file_contents.len());
     let socket = UdpSocket::bind((ip, 0)).expect("Failed to bind to UDP socket");
 
-    for (index, chunk) in file_contents.chunks(1000).enumerate() {
-        let mut data: Vec<u8> = vec![0, 6];
+    let chunks = file_contents.chunks(1000).collect::<Vec<_>>();
 
-        let mut chunk = chunk.to_vec();
+    let mut next_sequence_number = 0;
+    let mut send_base: u32 = 0;
+    let window_size: u32 = min(10, chunks.len() as u32);
+    let mut last_ack_received = Instant::now();
 
-        let index_bytes = (index as u32).to_be_bytes();
-        data.extend(index_bytes.iter());
+    while (next_sequence_number as usize) < chunks.len() {
+        if next_sequence_number < send_base + window_size {
+            let current_chunk = chunks[next_sequence_number as usize];
+            println!("Sending chunk {}", next_sequence_number);
+            send_file_chunk(
+                current_chunk.to_vec(),
+                next_sequence_number as u32,
+                &socket,
+                ip,
+                port as u16,
+            );
 
-        let payload_size: u16 = chunk.len() as u16;
-        println!("Processing chunk {}, size: {}", index, payload_size);
+            next_sequence_number += 1;
+        }
 
-        data.extend(payload_size.to_be_bytes().iter());
-        data.append(&mut chunk);
-
-        let bytes_sent = socket.send_to(&data, (ip, port as u16));
-        let bytes_sent = match bytes_sent {
-            Err(e) => {
-                eprintln!("{}", e);
-                // TODO: dont panic
-                panic!(e);
-            }
-            Ok(bytes) => bytes,
+        let message = receive_message(&mut stream);
+        let seq_number = match message {
+            Ok(Message::Ack(seq_number)) => seq_number,
+            _ => panic!("Unknown problem"),
         };
 
-        println!("Sent {} bytes", bytes_sent);
+        while seq_number > send_base {
+            last_ack_received = Instant::now();
+            send_base += 1;
+        }
 
-        let mut buffer = [0; 1024];
-        let bytes_read = stream.read(&mut buffer).unwrap();
+        let duration = Instant::now() - last_ack_received;
+        let timed_out = Duration::from_millis(200).lt(&duration);
 
-        let message = Message::new(&buffer, bytes_read);
-
-        if let Ok(Message::Ack(seq_number)) = message {
+        if timed_out {
             println!(
-                "Received ack for message {}. Processing next sequence.",
-                seq_number
+                "Timed out, resending window start={}, end={}",
+                send_base, next_sequence_number
             );
+            for index in send_base..next_sequence_number {
+                let current_chunk = chunks[index as usize];
+                send_file_chunk(
+                    current_chunk.to_vec(),
+                    index as u32,
+                    &socket,
+                    ip,
+                    port as u16,
+                );
+            }
         }
     }
 
-    let mut buffer = [0; 1024];
-    let bytes_read = stream.read(&mut buffer).unwrap();
-    let message = Message::new(&buffer, bytes_read);
+    let message = receive_message(&mut stream);
 
     if let Ok(Message::End) = message {
         println!("Got fin message from server, quitting.");
     }
+}
+
+fn send_file_chunk(chunk: Vec<u8>, index: u32, socket: &UdpSocket, ip: IpAddr, port: u16) -> () {
+    let mut data: Vec<u8> = vec![0, 6];
+
+    let mut chunk = chunk.to_vec();
+
+    let index_bytes = (index as u32).to_be_bytes();
+    data.extend(index_bytes.iter());
+
+    let payload_size: u16 = chunk.len() as u16;
+    println!("Processing chunk {}, size: {}", index, payload_size);
+
+    data.extend(payload_size.to_be_bytes().iter());
+    data.append(&mut chunk);
+
+    let bytes_sent = socket.send_to(&data, (ip, port));
+    let bytes_sent = match bytes_sent {
+        Err(e) => {
+            eprintln!("{}", e);
+            // TODO: dont panic
+            panic!(e);
+        }
+        Ok(bytes) => bytes,
+    };
+
+    println!("Sent {} bytes", bytes_sent);
 }

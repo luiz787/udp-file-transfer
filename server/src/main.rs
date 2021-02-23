@@ -1,9 +1,9 @@
 use core::panic;
+use std::env;
+use std::fs::File;
 use std::net::TcpListener;
 use std::process;
 use std::thread;
-use std::{collections::BTreeMap, fs::File};
-use std::{env, io::ErrorKind};
 use std::{
     io::Write,
     net::{TcpStream, UdpSocket},
@@ -104,9 +104,11 @@ fn receive_file(
     udp_socket: UdpSocket,
     file_data: FileData,
 ) -> Result<(), GenericError> {
-    let mut map: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
-    let mut total_received: u64 = 0;
-    while total_received < file_data.file_size {
+    let mut expected_sequence_number = 0;
+    let mut contents: Vec<u8> = Vec::new();
+    let expected_chunks = (file_data.file_size / 1000) + 1;
+
+    loop {
         let mut buffer = [0; 1024];
         let bytes_read = udp_socket.recv(&mut buffer);
         let bytes_read = match bytes_read {
@@ -114,60 +116,50 @@ fn receive_file(
             _ => 0,
         };
         println!("Read {} from udp socket", bytes_read);
-
-        // TODO: remove thread sleep
-        thread::sleep(std::time::Duration::from_secs(5));
         let message = GenericError::transform_logic(Message::new(&buffer, bytes_read));
-
         match message {
             Ok(Message::File(ChunkData {
                 sequence_number,
                 data,
-                payload_size,
-            })) => {
-                if !map.contains_key(&sequence_number) {
-                    map.insert(sequence_number, data);
-                    total_received += payload_size as u64;
-                }
+                ..
+            })) if sequence_number == expected_sequence_number => {
+                println!("Received chunk {}, sending ack for it.", sequence_number);
+                contents.append(&mut data.clone());
+
+                expected_sequence_number += 1;
                 let mut ack: Vec<u8> = vec![0, 7];
                 ack.extend(sequence_number.to_be_bytes().iter());
 
                 GenericError::transform_io(send_message(stream, &ack))?;
+
+                if sequence_number as u64 == (expected_chunks - 1) {
+                    break;
+                }
+            }
+            Ok(Message::File(_file_data)) => {
+                println!(
+                    "Received chunk {} out of order. Sending ack for last again.",
+                    _file_data.sequence_number
+                );
+                let mut ack: Vec<u8> = vec![0, 7];
+                ack.extend((expected_sequence_number - 1).to_be_bytes().iter());
+
+                GenericError::transform_io(send_message(stream, &ack))?;
             }
             Ok(_val) => {
+                println!("Invalid message type");
                 return Err(GenericError::Logic(MessageCreationError::new(
                     "Invalid message type",
-                )))
+                )));
             }
             Err(e) => return Err(e),
         }
     }
 
-    let mut file_contents: Vec<u8> = Vec::with_capacity(total_received as usize);
-    for (seq_number, chunk) in map.iter() {
-        println!("Seq number: {}, size: {}", seq_number, chunk.len());
-        for byte in chunk {
-            file_contents.push(*byte);
-        }
-    }
-
-    println!(
-        "Size of content to be written to file: {}",
-        file_contents.len()
-    );
-
-    if let Err(e) = std::fs::create_dir("output") {
-        if e.kind() == ErrorKind::AlreadyExists {
-            println!("Output folder already exists, continuing");
-        } else {
-            eprintln!("Output folder was not created: {}", e);
-            return Err(GenericError::IO(e));
-        }
-    }
     let mut file =
         GenericError::transform_io(File::create(format!("output/{}", file_data.filename)))?;
 
-    GenericError::transform_io(file.write_all(&file_contents))?;
+    GenericError::transform_io(file.write_all(&contents))?;
 
     let fin: Vec<u8> = vec![0, 5];
     let res = GenericError::transform_io(stream.write(&fin));
