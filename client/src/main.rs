@@ -1,13 +1,13 @@
-use std::cmp::min;
 use std::iter::repeat;
 use std::net::IpAddr;
 use std::net::TcpStream;
 use std::net::UdpSocket;
 use std::process;
 use std::time::{Duration, Instant};
+use std::{cmp::min, io::ErrorKind, sync::mpsc, thread};
 use std::{env, io::Write};
 
-use common::{receive_message, Message};
+use common::{receive_message, GenericError, Message};
 
 mod client_config;
 use client_config::ClientConfig;
@@ -70,15 +70,106 @@ fn transfer_file(mut stream: TcpStream, ip: IpAddr, port: u32, file_contents: Ve
     println!("Length of file: {}", file_contents.len());
     let socket = UdpSocket::bind((ip, 0)).expect("Failed to bind to UDP socket");
 
-    let chunks = file_contents.chunks(1000).collect::<Vec<_>>();
+    // Channel to transmit sequence_numbers
+    let (tx_sequence_numbers, rx_sequence_numbers) = mpsc::channel::<u32>();
 
+    // Channel for the main thread to send a signal to UDP thread to finish
+    let (tx_continue, rx_continue) = mpsc::channel::<()>();
+
+    let last_chunk = file_contents.chunks(1000).collect::<Vec<_>>().len() - 1;
+
+    let udp_thread_handle = thread::spawn(move || {
+        send_file_chunks(
+            file_contents,
+            rx_continue,
+            socket,
+            ip,
+            port,
+            rx_sequence_numbers,
+        );
+    });
+
+    let mut connection_closed = false;
+
+    loop {
+        println!("Waiting for ack.");
+        let message = receive_message(&mut stream);
+        let seq_number = match message {
+            Ok(Message::Ack(seq_number)) => seq_number,
+            Ok(Message::End) => {
+                println!("Server finished the connection, exiting.");
+                break;
+            }
+            Ok(_m) => {
+                println!("Got message that is not an recognized as an ack (maybe due to packet corruption)");
+                continue;
+            }
+            Err(e) => match e {
+                GenericError::IO(io_error) => {
+                    if io_error.kind() == ErrorKind::ConnectionAborted {
+                        println!("Server finished the connection, exiting.");
+                        connection_closed = true;
+                        tx_continue.send(()).unwrap();
+                        break;
+                    }
+                    println!("Failed to get msg due to IO error.");
+                    println!("{}", io_error);
+                    panic!("Failed to get msg");
+                }
+                GenericError::Logic(msg_error) => {
+                    println!("Failed to get message due to logic failure when parsing message.");
+                    println!("{}", msg_error);
+                    continue;
+                }
+            },
+        };
+
+        println!("Received ack for index={}.", seq_number);
+        match tx_sequence_numbers.send(seq_number) {
+            Ok(_v) => {}
+            Err(_e) => println!("Udp thread already died"),
+        }
+
+        if seq_number == last_chunk as u32 {
+            println!("Got ack for last index, finishing main loop");
+            break;
+        }
+    }
+
+    udp_thread_handle.join().unwrap();
+
+    // If the connection was already closed, there's no point in trying to receive the "Finish" message.
+    if !connection_closed {
+        let message = receive_message(&mut stream);
+
+        if let Ok(Message::End) = message {
+            println!("Got fin message from server, quitting.");
+        }
+    }
+}
+
+fn send_file_chunks(
+    file_contents: Vec<u8>,
+    rx_continue: mpsc::Receiver<()>,
+    socket: UdpSocket,
+    ip: IpAddr,
+    port: u32,
+    rx_sequence_numbers: mpsc::Receiver<u32>,
+) {
+    let chunks = file_contents.chunks(1000).collect::<Vec<_>>();
+    println!("{} chunks will be sent", chunks.len());
     let mut next_sequence_number = 0;
     let mut send_base: u32 = 0;
     let window_size: u32 = min(10, chunks.len() as u32);
     let mut last_ack_received = Instant::now();
+    while (send_base as usize) < chunks.len() - 1 {
+        if let Ok(()) = rx_continue.try_recv() {
+            break;
+        }
 
-    while (next_sequence_number as usize) < chunks.len() {
-        if next_sequence_number < send_base + window_size {
+        if (next_sequence_number as usize) < chunks.len()
+            && next_sequence_number < send_base + window_size
+        {
             let current_chunk = chunks[next_sequence_number as usize];
             println!("Sending chunk {}", next_sequence_number);
             send_file_chunk(
@@ -92,25 +183,25 @@ fn transfer_file(mut stream: TcpStream, ip: IpAddr, port: u32, file_contents: Ve
             next_sequence_number += 1;
         }
 
-        let message = receive_message(&mut stream);
-        let seq_number = match message {
-            Ok(Message::Ack(seq_number)) => seq_number,
-            _ => panic!("Unknown problem"),
+        let seq_number = rx_sequence_numbers.try_recv();
+
+        match seq_number {
+            Ok(num) => {
+                while num > send_base {
+                    last_ack_received = Instant::now();
+                    send_base += 1;
+                }
+                continue;
+            }
+            Err(_e) => {}
         };
-
-        while seq_number > send_base {
-            last_ack_received = Instant::now();
-            send_base += 1;
-        }
-
         let duration = Instant::now() - last_ack_received;
         let timed_out = Duration::from_millis(200).lt(&duration);
 
+        // Sleep to yield thread (in some cases, the udp thread was making the tcp thread starve).
+        thread::sleep(Duration::from_millis(5));
+
         if timed_out {
-            println!(
-                "Timed out, resending window start={}, end={}",
-                send_base, next_sequence_number
-            );
             for index in send_base..next_sequence_number {
                 let current_chunk = chunks[index as usize];
                 send_file_chunk(
@@ -123,12 +214,7 @@ fn transfer_file(mut stream: TcpStream, ip: IpAddr, port: u32, file_contents: Ve
             }
         }
     }
-
-    let message = receive_message(&mut stream);
-
-    if let Ok(Message::End) = message {
-        println!("Got fin message from server, quitting.");
-    }
+    println!("Exiting from udp thread");
 }
 
 fn send_file_chunk(chunk: Vec<u8>, index: u32, socket: &UdpSocket, ip: IpAddr, port: u16) -> () {
@@ -140,20 +226,14 @@ fn send_file_chunk(chunk: Vec<u8>, index: u32, socket: &UdpSocket, ip: IpAddr, p
     data.extend(index_bytes.iter());
 
     let payload_size: u16 = chunk.len() as u16;
-    println!("Processing chunk {}, size: {}", index, payload_size);
 
     data.extend(payload_size.to_be_bytes().iter());
     data.append(&mut chunk);
 
     let bytes_sent = socket.send_to(&data, (ip, port));
-    let bytes_sent = match bytes_sent {
-        Err(e) => {
-            eprintln!("{}", e);
-            // TODO: dont panic
-            panic!(e);
-        }
-        Ok(bytes) => bytes,
-    };
 
-    println!("Sent {} bytes", bytes_sent);
+    if let Err(e) = bytes_sent {
+        eprintln!("{}", e);
+        panic!(e);
+    }
 }

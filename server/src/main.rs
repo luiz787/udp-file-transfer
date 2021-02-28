@@ -1,9 +1,9 @@
 use core::panic;
-use std::env;
 use std::fs::File;
 use std::net::TcpListener;
 use std::process;
 use std::thread;
+use std::{env, usize};
 use std::{
     io::Write,
     net::{TcpStream, UdpSocket},
@@ -105,9 +105,15 @@ fn receive_file(
     file_data: FileData,
 ) -> Result<(), GenericError> {
     println!("Starting to receive file");
-    let mut expected_sequence_number = 0;
-    let mut contents: Vec<u8> = Vec::new();
     let expected_chunks = (file_data.file_size / 1000) + 1;
+    println!("Expected chunks={}", expected_chunks);
+    let mut contents: Vec<Vec<u8>> = vec![Vec::new(); expected_chunks as usize];
+    let mut acked_chunks = vec![false; expected_chunks as usize];
+    let mut received_chunks = vec![false; expected_chunks as usize];
+
+    let rws = 10;
+    let mut last_acceptable_chunk = rws;
+    let mut last_chunk_read = 0;
 
     loop {
         let mut buffer = [0; 1024];
@@ -123,29 +129,105 @@ fn receive_file(
                 sequence_number,
                 data,
                 ..
-            })) if sequence_number == expected_sequence_number => {
-                println!("Received chunk {}, sending ack for it.", sequence_number);
-                contents.append(&mut data.clone());
+            })) => {
+                println!("Received chunk {}", sequence_number);
+                if last_chunk_read <= sequence_number && sequence_number <= last_acceptable_chunk {
+                    received_chunks[sequence_number as usize] = true;
+                    println!(
+                        "Received chunk {}, which is inside the current window.",
+                        sequence_number
+                    );
+                    println!("LAF={}, LFR={}", last_acceptable_chunk, last_chunk_read);
+                    contents[sequence_number as usize] = data.clone();
 
-                expected_sequence_number += 1;
-                let mut ack: Vec<u8> = vec![0, 7];
-                ack.extend(sequence_number.to_be_bytes().iter());
+                    let all_received = received_chunks.iter().all(|item| *item);
+                    let should_ack = sequence_number == last_chunk_read
+                        || sequence_number == last_chunk_read + 1
+                        || all_received;
+                    if should_ack {
+                        let mut ack_sent = None;
 
-                GenericError::transform_io(send_message(stream, &ack))?;
+                        if received_chunks.iter().all(|item| *item) {
+                            println!("All chunks received. Sending ack to last.");
 
-                if sequence_number as u64 == (expected_chunks - 1) {
-                    break;
+                            let mut ack: Vec<u8> = vec![0, 7];
+                            let ack_idx: u32 = (expected_chunks - 1) as u32;
+
+                            ack.extend(ack_idx.to_be_bytes().iter());
+                            ack_sent = Some(ack_idx);
+                            println!("Sending ack={}", ack_idx);
+
+                            GenericError::transform_io(send_message(stream, &ack))?;
+                        } else {
+                            for (idx, received) in received_chunks.iter().enumerate() {
+                                if !received && idx > 0 {
+                                    // Send ack to last that was received.
+                                    let mut ack: Vec<u8> = vec![0, 7];
+                                    let ack_idx: u32 = (idx as u32) - 1;
+
+                                    ack.extend(ack_idx.to_be_bytes().iter());
+                                    ack_sent = Some(ack_idx);
+
+                                    println!("Sending ack={}", ack_sent.unwrap());
+                                    GenericError::transform_io(send_message(stream, &ack))?;
+
+                                    for i in last_chunk_read..idx as u32 {
+                                        acked_chunks[i as usize] = true;
+                                    }
+                                    let amt = idx as u32 - last_chunk_read;
+                                    last_chunk_read += amt;
+                                    last_acceptable_chunk += amt;
+
+                                    println!(
+                                        "LAF={}, LFR={}",
+                                        last_acceptable_chunk, last_chunk_read
+                                    );
+                                    break;
+                                }
+                            }
+                        }
+
+                        if ack_sent == None {
+                            if sequence_number as u64 == expected_chunks - 1 {
+                                println!("Sending ack to last chunk");
+                                let mut ack: Vec<u8> = vec![0, 7];
+                                let ack_idx: u32 = sequence_number;
+
+                                ack.extend(ack_idx.to_be_bytes().iter());
+                                GenericError::transform_io(send_message(stream, &ack))?;
+
+                                println!("Exiting as last ack was sent");
+                                break;
+                            }
+                        }
+
+                        if ack_sent.is_some() && ack_sent.unwrap() as u64 == expected_chunks - 1 {
+                            println!("Sent last ack, exiting");
+                            // Sent last ack
+                            break;
+                        }
+                    }
+                } else {
+                    println!("Chunk received is outside window.");
+                    println!(
+                        "Sending ack to last frame received, lfr={}, seqnum={}",
+                        last_chunk_read - 1,
+                        sequence_number
+                    );
+
+                    let mut ack: Vec<u8> = vec![0, 7];
+                    let ack_idx: u32 = last_chunk_read - 1;
+
+                    ack.extend(ack_idx.to_be_bytes().iter());
+
+                    GenericError::transform_io(send_message(stream, &ack))?;
+                    println!("AckSent={}, last={}", ack_idx, expected_chunks - 1);
+                    if ack_idx as u64 == expected_chunks - 1 {
+                        println!("Sent last ack, exiting");
+                        // Sent last ack
+                        break;
+                    }
                 }
-            }
-            Ok(Message::File(_file_data)) => {
-                println!(
-                    "Received chunk {} out of order. Sending ack for last again.",
-                    _file_data.sequence_number
-                );
-                let mut ack: Vec<u8> = vec![0, 7];
-                ack.extend((expected_sequence_number - 1).to_be_bytes().iter());
-
-                GenericError::transform_io(send_message(stream, &ack))?;
             }
             Ok(_val) => {
                 println!("Invalid message type");
@@ -156,12 +238,14 @@ fn receive_file(
             Err(e) => return Err(e),
         }
     }
-
     let mut file =
         GenericError::transform_io(File::create(format!("output/{}", file_data.filename)))?;
 
+    let contents = contents.iter().flat_map(|v| v.clone()).collect::<Vec<_>>();
+
     GenericError::transform_io(file.write_all(&contents))?;
 
+    println!("Sending fin message...");
     let fin: Vec<u8> = vec![0, 5];
     let res = GenericError::transform_io(stream.write(&fin));
 

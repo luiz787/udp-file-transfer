@@ -63,7 +63,10 @@ impl Message {
             5 => Ok(Self::End),
             6 => create_file(bytes_read, &message_type),
             7 => create_ack(bytes_read, &message_type),
-            _ => Err(MessageCreationError::new("Unknown message type")),
+            other => {
+                println!("Message type={}", other);
+                Err(MessageCreationError::new("Unknown message type"))
+            }
         }
     }
 }

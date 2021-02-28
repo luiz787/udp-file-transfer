@@ -1,4 +1,4 @@
-use std::io::{Error, Read, Write};
+use std::io::{Error, ErrorKind, Read, Write};
 use std::net::TcpStream;
 
 use crate::{Message, MessageCreationError};
@@ -27,8 +27,16 @@ pub fn receive_message(stream: &mut TcpStream) -> Result<Message, GenericError> 
         .read(&mut buffer)
         .map_err(|err| GenericError::IO(err));
 
-    bytes_read
-        .and_then(|value| Message::new(&buffer, value).map_err(|err| GenericError::Logic(err)))
+    bytes_read.and_then(|value| {
+        if value == 0 {
+            Err(GenericError::IO(Error::new(
+                ErrorKind::ConnectionAborted,
+                "Connection closed",
+            )))
+        } else {
+            GenericError::transform_logic(Message::new(&buffer, value))
+        }
+    })
 }
 
 pub fn send_message(stream: &mut TcpStream, data: &Vec<u8>) -> Result<usize, Error> {
