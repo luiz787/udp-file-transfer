@@ -9,12 +9,12 @@ impl ServerConfig {
 
         let port = match args.next() {
             Some(port) => port,
-            None => return Err("No port specified"),
+            None => return Err("Nenhuma porta especificada"),
         };
 
         let port = port
             .parse()
-            .expect("Port should be a 16 bit unsigned integer");
+            .expect("A porta deve ser um inteiro unsigned de 16 bits");
 
         Ok(ServerConfig { port })
     }

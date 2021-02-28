@@ -14,17 +14,16 @@ use client_config::ClientConfig;
 
 fn main() {
     let config = ClientConfig::new(env::args()).unwrap_or_else(|err| {
-        eprintln!("Problem parsing arguments: {}", err);
+        eprintln!("Problema ao interpretar argumentos: {}", err);
         process::exit(1);
     });
 
     let mut stream =
-        TcpStream::connect((config.ip, config.port)).expect("Failed to connect to remote server.");
+        TcpStream::connect((config.ip, config.port)).expect("Falha ao conectar com o servidor remoto.");
 
     let hello = create_hello_message();
 
-    let bytes_sent = stream.write(&hello).expect("Failed to write buffer");
-    println!("{} bytes sent", bytes_sent);
+    stream.write(&hello).expect("Falha ao enviar bytes.");
 
     let message = common::receive_message(&mut stream);
 
@@ -33,18 +32,18 @@ fn main() {
         _ => panic!("Não foi possível obter a porta UDP"),
     };
 
-    println!("Port is {}", port);
+    println!("Porta UDP é: {}", port);
 
     let file_contents = std::fs::read(&config.filename.filename).expect("Falha ao abrir o arquivo");
     let info_file = create_info_file_message(&config, &file_contents);
 
-    let bytes_sent = stream.write(&info_file).expect("Failed to write buffer");
-    println!("{} bytes sent", bytes_sent);
+    let bytes_sent = stream.write(&info_file).expect("Falha ao enviar bytes.");
+    println!("{} bytes enviados", bytes_sent);
 
     let message = common::receive_message(&mut stream);
 
     if let Ok(Message::Ok) = message {
-        println!("Ready to start file transfer.");
+        println!("Pronto para iniciar transmissão do arquivo.");
     }
 
     transfer_file(stream, config.ip, port, file_contents);
@@ -67,8 +66,8 @@ fn create_hello_message() -> Vec<u8> {
 }
 
 fn transfer_file(mut stream: TcpStream, ip: IpAddr, port: u32, file_contents: Vec<u8>) -> () {
-    println!("Length of file: {}", file_contents.len());
-    let socket = UdpSocket::bind((ip, 0)).expect("Failed to bind to UDP socket");
+    println!("Tamanho do arquivo: {}", file_contents.len());
+    let socket = UdpSocket::bind((ip, 0)).expect("Falha ao fazer bind no socket UDP");
 
     // Channel to transmit sequence_numbers
     let (tx_sequence_numbers, rx_sequence_numbers) = mpsc::channel::<u32>();
@@ -92,46 +91,38 @@ fn transfer_file(mut stream: TcpStream, ip: IpAddr, port: u32, file_contents: Ve
     let mut connection_closed = false;
 
     loop {
-        println!("Waiting for ack.");
         let message = receive_message(&mut stream);
         let seq_number = match message {
             Ok(Message::Ack(seq_number)) => seq_number,
             Ok(Message::End) => {
-                println!("Server finished the connection, exiting.");
                 break;
             }
             Ok(_m) => {
-                println!("Got message that is not an recognized as an ack (maybe due to packet corruption)");
                 continue;
             }
             Err(e) => match e {
                 GenericError::IO(io_error) => {
                     if io_error.kind() == ErrorKind::ConnectionAborted {
-                        println!("Server finished the connection, exiting.");
                         connection_closed = true;
                         tx_continue.send(()).unwrap();
                         break;
                     }
-                    println!("Failed to get msg due to IO error.");
                     println!("{}", io_error);
                     panic!("Failed to get msg");
                 }
                 GenericError::Logic(msg_error) => {
-                    println!("Failed to get message due to logic failure when parsing message.");
                     println!("{}", msg_error);
                     continue;
                 }
             },
         };
 
-        println!("Received ack for index={}.", seq_number);
         match tx_sequence_numbers.send(seq_number) {
             Ok(_v) => {}
             Err(_e) => println!("Udp thread already died"),
         }
 
         if seq_number == last_chunk as u32 {
-            println!("Got ack for last index, finishing main loop");
             break;
         }
     }
@@ -143,7 +134,7 @@ fn transfer_file(mut stream: TcpStream, ip: IpAddr, port: u32, file_contents: Ve
         let message = receive_message(&mut stream);
 
         if let Ok(Message::End) = message {
-            println!("Got fin message from server, quitting.");
+            println!("Arquivo enviado com sucesso.");
         }
     }
 }
@@ -157,7 +148,6 @@ fn send_file_chunks(
     rx_sequence_numbers: mpsc::Receiver<u32>,
 ) {
     let chunks = file_contents.chunks(1000).collect::<Vec<_>>();
-    println!("{} chunks will be sent", chunks.len());
     let mut next_sequence_number = 0;
     let mut send_base: u32 = 0;
     let window_size: u32 = min(10, chunks.len() as u32);
@@ -171,7 +161,6 @@ fn send_file_chunks(
             && next_sequence_number < send_base + window_size
         {
             let current_chunk = chunks[next_sequence_number as usize];
-            println!("Sending chunk {}", next_sequence_number);
             send_file_chunk(
                 current_chunk.to_vec(),
                 next_sequence_number as u32,
@@ -214,7 +203,6 @@ fn send_file_chunks(
             }
         }
     }
-    println!("Exiting from udp thread");
 }
 
 fn send_file_chunk(chunk: Vec<u8>, index: u32, socket: &UdpSocket, ip: IpAddr, port: u16) -> () {

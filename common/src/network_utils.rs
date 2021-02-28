@@ -31,7 +31,7 @@ pub fn receive_message(stream: &mut TcpStream) -> Result<Message, GenericError> 
         if value == 0 {
             Err(GenericError::IO(Error::new(
                 ErrorKind::ConnectionAborted,
-                "Connection closed",
+                "Conexão fechada",
             )))
         } else {
             GenericError::transform_logic(Message::new(&buffer, value))

@@ -51,7 +51,7 @@ impl Error for MessageCreationError {
 impl Message {
     pub fn new(message_type: &[u8], bytes_read: usize) -> Result<Message, MessageCreationError> {
         if bytes_read < 2 {
-            return Err(MessageCreationError::new("Read fewer than 2 bytes"));
+            return Err(MessageCreationError::new("Foram lidos menos de 2 bytes, o que é insuficiente para determinar o tipo de mensagem"));
         }
         let message_type_byte = message_type[1];
 
@@ -64,8 +64,8 @@ impl Message {
             6 => create_file(bytes_read, &message_type),
             7 => create_ack(bytes_read, &message_type),
             other => {
-                println!("Message type={}", other);
-                Err(MessageCreationError::new("Unknown message type"))
+                println!("Tipo de mensagem ({}) desconhecido.", other);
+                Err(MessageCreationError::new("Tipo de mensagem desconhecido."))
             }
         }
     }
@@ -77,7 +77,7 @@ fn create_connection(
 ) -> Result<Message, MessageCreationError> {
     if bytes_read < 6 {
         return Err(MessageCreationError::new(
-            "Read fewer than 6 bytes for message that should contain 6 bytes",
+            "Foram lidos menos de 6 bytes para uma mensagem que deve conter no mínimo 6 bytes",
         ));
     }
     let array = &message_type[2..6];
@@ -92,7 +92,7 @@ fn create_info_file(
 ) -> Result<Message, MessageCreationError> {
     if bytes_read < 25 {
         return Err(MessageCreationError::new(
-            "Read fewer than 25 bytes for message that should contain 25 bytes",
+            "Foram lidos menos de 25 bytes para uma mensagem que deve conter no mínimo 25 bytes",
         ));
     }
     let filename = match str::from_utf8(&message_type[2..17]) {
@@ -115,7 +115,7 @@ fn create_info_file(
 fn create_file(bytes_read: usize, message_type: &[u8]) -> Result<Message, MessageCreationError> {
     if bytes_read < 8 {
         return Err(MessageCreationError::new(
-            "Read fewer than 8 bytes for message that should contain at least 8 bytes",
+            "Foram lidos menos de 8 bytes para uma mensagem que deve conter no mínimo 8 bytes",
         ));
     }
 
@@ -134,7 +134,7 @@ fn create_file(bytes_read: usize, message_type: &[u8]) -> Result<Message, Messag
 fn create_ack(bytes_read: usize, message_type: &[u8]) -> Result<Message, MessageCreationError> {
     if bytes_read < 6 {
         return Err(MessageCreationError::new(
-            "Read fewer than 6 bytes for message that should contain 6 bytes",
+            "Foram lidos menos de 6 bytes para uma mensagem que deve conter no mínimo 6 bytes",
         ));
     }
 

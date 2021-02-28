@@ -53,24 +53,24 @@ impl ClientConfig {
 
         let ip = match args.next() {
             Some(ip) => ip,
-            None => return Err("Server ip not specified"),
+            None => return Err("IP do servidor não especificado."),
         };
 
         let port = match args.next() {
             Some(port) => port,
-            None => return Err("Server port not specified"),
+            None => return Err("Porta do servidor não especificada."),
         };
 
         // TODO: refactor to return Err instead of panic
         let port = port
             .parse()
-            .expect("Port should be a 16 bit unsigned integer");
+            .expect("A porta deve ser um inteiro unsigned de 16 bits");
 
         let ip = ip.parse::<IpAddr>();
 
         let ip = match ip {
             Ok(ip) => ip,
-            Err(_error) => return Err("Failed to parse ip address"),
+            Err(_error) => return Err("Falha ao fazer o parse do endereço ip"),
         };
 
         let filename = Filename::new(args.next());
