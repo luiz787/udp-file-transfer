@@ -1,2 +1,1 @@
-tc qdisc del dev dummy root
-ip link del dev dummy
+tc qdisc del dev lo root
