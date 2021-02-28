@@ -130,7 +130,9 @@ fn receive_file(
                 ..
             })) => {
                 println!("Bloco {} recebido", sequence_number);
-                if last_chunk_read <= sequence_number && sequence_number <= last_acceptable_chunk {
+
+                let received_chunk_is_in_window = last_chunk_read <= sequence_number && sequence_number <= last_acceptable_chunk;
+                if received_chunk_is_in_window {
                     received_chunks[sequence_number as usize] = true;
                     println!(
                         "Received chunk {}, which is inside the current window.",
@@ -140,13 +142,13 @@ fn receive_file(
                     contents[sequence_number as usize] = data.clone();
 
                     let all_received = received_chunks.iter().all(|item| *item);
-                    let should_ack = sequence_number == last_chunk_read
+                    let should_send_ack = sequence_number == last_chunk_read
                         || sequence_number == last_chunk_read + 1
                         || all_received;
-                    if should_ack {
+                    if should_send_ack {
                         let mut ack_sent = None;
 
-                        if received_chunks.iter().all(|item| *item) {
+                        if all_received {
                             println!("Todos os blocos recebidos. Enviando ack para o último.");
 
                             let mut ack: Vec<u8> = vec![0, 7];
@@ -159,7 +161,8 @@ fn receive_file(
                         } else {
                             for (idx, received) in received_chunks.iter().enumerate() {
                                 if !received && idx > 0 {
-                                    // Send ack to last that was received.
+                                    // Nesse caso, é enviado um ack cumulativo,
+                                    // considerando até o último bloco que já foi recebido de forma contígua
                                     let mut ack: Vec<u8> = vec![0, 7];
                                     let ack_idx: u32 = (idx as u32) - 1;
 
@@ -185,18 +188,17 @@ fn receive_file(
                             }
                         }
 
-                        if ack_sent == None {
-                            if sequence_number as u64 == expected_chunks - 1 {
-                                println!("Enviando ack para o último bloco");
-                                let mut ack: Vec<u8> = vec![0, 7];
-                                let ack_idx: u32 = sequence_number;
+                        let received_last = sequence_number as u64 == expected_chunks - 1;
+                        if ack_sent == None && received_last {
+                            println!("Enviando ack para o último bloco");
+                            let mut ack: Vec<u8> = vec![0, 7];
+                            let ack_idx: u32 = sequence_number;
 
-                                ack.extend(ack_idx.to_be_bytes().iter());
-                                GenericError::transform_io(send_message(stream, &ack))?;
+                            ack.extend(ack_idx.to_be_bytes().iter());
+                            GenericError::transform_io(send_message(stream, &ack))?;
 
-                                println!("Finalizando, uma vez que o último ack foi enviado");
-                                break;
-                            }
+                            println!("Finalizando, uma vez que o último ack foi enviado");
+                            break;
                         }
 
                         if ack_sent.is_some() && ack_sent.unwrap() as u64 == expected_chunks - 1 {
@@ -212,6 +214,8 @@ fn receive_file(
                         sequence_number
                     );
 
+                    // Esse ack é enviado pois o cliente pode estar esperando um ack que foi perdido,
+                    // e está retransmitindo blocos que para o servidor já estão "acked"
                     let mut ack: Vec<u8> = vec![0, 7];
                     let ack_idx: u32 = last_chunk_read - 1;
 
@@ -224,7 +228,7 @@ fn receive_file(
                     }
                 }
             }
-            Ok(_val) => {
+            Ok(_msg) => {
                 let message = "Tipo de mensagem inválido";
                 println!("{}", message);
                 return Err(GenericError::Logic(MessageCreationError::new(

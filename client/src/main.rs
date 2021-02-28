@@ -105,6 +105,7 @@ fn transfer_file(mut stream: TcpStream, ip: IpAddr, port: u32, file_contents: Ve
                     if io_error.kind() == ErrorKind::ConnectionAborted {
                         connection_closed = true;
                         tx_continue.send(()).unwrap();
+                        println!("Arquivo enviado com sucesso.");
                         break;
                     }
                     println!("{}", io_error);

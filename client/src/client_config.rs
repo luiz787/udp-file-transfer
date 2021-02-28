@@ -61,7 +61,6 @@ impl ClientConfig {
             None => return Err("Porta do servidor não especificada."),
         };
 
-        // TODO: refactor to return Err instead of panic
         let port = port
             .parse()
             .expect("A porta deve ser um inteiro unsigned de 16 bits");

@@ -49,20 +49,20 @@ impl Error for MessageCreationError {
 }
 
 impl Message {
-    pub fn new(message_type: &[u8], bytes_read: usize) -> Result<Message, MessageCreationError> {
+    pub fn new(message: &[u8], bytes_read: usize) -> Result<Message, MessageCreationError> {
         if bytes_read < 2 {
             return Err(MessageCreationError::new("Foram lidos menos de 2 bytes, o que é insuficiente para determinar o tipo de mensagem"));
         }
-        let message_type_byte = message_type[1];
+        let message_type_byte = message[1];
 
         match message_type_byte {
             1 => Ok(Self::Hello),
-            2 => create_connection(bytes_read, &message_type),
-            3 => create_info_file(bytes_read, &message_type),
+            2 => create_connection(bytes_read, &message),
+            3 => create_info_file(bytes_read, &message),
             4 => Ok(Self::Ok),
             5 => Ok(Self::End),
-            6 => create_file(bytes_read, &message_type),
-            7 => create_ack(bytes_read, &message_type),
+            6 => create_file(bytes_read, &message),
+            7 => create_ack(bytes_read, &message),
             other => {
                 println!("Tipo de mensagem ({}) desconhecido.", other);
                 Err(MessageCreationError::new("Tipo de mensagem desconhecido."))
@@ -71,6 +71,7 @@ impl Message {
     }
 }
 
+/// Cria uma mensagem do tipo "Connection"
 fn create_connection(
     bytes_read: usize,
     message_type: &[u8],
@@ -86,6 +87,7 @@ fn create_connection(
     Ok(Message::Connection(port))
 }
 
+/// Cria uma mensagem do tipo "Info file"
 fn create_info_file(
     bytes_read: usize,
     message_type: &[u8],
@@ -112,6 +114,7 @@ fn create_info_file(
     }))
 }
 
+/// Cria uma mensagem do tipo "File"
 fn create_file(bytes_read: usize, message_type: &[u8]) -> Result<Message, MessageCreationError> {
     if bytes_read < 8 {
         return Err(MessageCreationError::new(
@@ -131,6 +134,7 @@ fn create_file(bytes_read: usize, message_type: &[u8]) -> Result<Message, Messag
     }))
 }
 
+/// Cria uma mensagem do tipo "Ack"
 fn create_ack(bytes_read: usize, message_type: &[u8]) -> Result<Message, MessageCreationError> {
     if bytes_read < 6 {
         return Err(MessageCreationError::new(
