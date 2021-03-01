@@ -1,5 +1,5 @@
 use core::panic;
-use std::fs::File;
+use std::fs::{create_dir, File};
 use std::net::TcpListener;
 use std::process;
 use std::thread;
@@ -238,6 +238,8 @@ fn receive_file(
             Err(e) => return Err(e),
         }
     }
+
+    GenericError::transform_io(create_output_directory())?;
     let mut file =
         GenericError::transform_io(File::create(format!("output/{}", file_data.filename)))?;
 
@@ -250,4 +252,22 @@ fn receive_file(
     let res = GenericError::transform_io(stream.write(&fin));
 
     res.map(|_val| ())
+}
+
+fn create_output_directory() -> Result<(), std::io::Error>{
+    match create_dir("output") {
+        Err(e) => {
+            match e.kind() {
+                std::io::ErrorKind::AlreadyExists => {
+                    println!("Output folder already exists");
+                    Ok(())
+                },
+                kind => {
+                    println!("Unrecoverable error: {:?}", kind);
+                    return Err(e);
+                }
+            }
+        },
+        Ok(()) => Ok(())
+    }
 }
