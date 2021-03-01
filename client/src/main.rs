@@ -149,11 +149,14 @@ fn send_file_chunks(
     rx_sequence_numbers: mpsc::Receiver<u32>,
 ) {
     let chunks = file_contents.chunks(1000).collect::<Vec<_>>();
+
     let mut next_sequence_number = 0;
     let mut send_base: u32 = 0;
     let window_size: u32 = min(10, chunks.len() as u32);
     let mut last_ack_received = Instant::now();
-    while (send_base as usize) < chunks.len() - 1 {
+    
+    let is_single_chunk = chunks.len() == 1 && send_base == 0;
+    while (send_base as usize) < chunks.len() - 1 || is_single_chunk {
         if let Ok(()) = rx_continue.try_recv() {
             break;
         }
@@ -177,6 +180,10 @@ fn send_file_chunks(
 
         match seq_number {
             Ok(num) => {
+                // Se é chunk único, só pode ter recebido o número de sequência zero, então é seguro finalizar o loop.
+                if is_single_chunk {
+                    break;
+                }
                 while num > send_base {
                     last_ack_received = Instant::now();
                     send_base += 1;
